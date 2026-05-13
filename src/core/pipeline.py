@@ -479,12 +479,22 @@ class StockAnalysisPipeline:
                 )
 
             self._emit_progress(64, f"{stock_name}：正在请求 LLM 生成报告")
-            result = self.analyzer.analyze(
-                enhanced_context,
-                news_context=news_context,
-                progress_callback=self._emit_progress,
-                stream_progress_callback=_on_llm_stream,
-            )
+
+            # Issue #XXX: Skip LLM branch for technical-only analysis
+            if getattr(self.config, 'skip_llm_analysis', False):
+                logger.info(f"[{code}] 跳过 LLM 分析（SKIP_LLM_ANALYSIS=true），使用技术指标生成报告")
+                from src.analyzer import build_technical_analysis_result
+                result = build_technical_analysis_result(
+                    enhanced_context,
+                    news_context=news_context,
+                )
+            else:
+                result = self.analyzer.analyze(
+                    enhanced_context,
+                    news_context=news_context,
+                    progress_callback=self._emit_progress,
+                    stream_progress_callback=_on_llm_stream,
+                )
 
             # Step 7.5: 填充分析时的价格信息到 result
             if result:

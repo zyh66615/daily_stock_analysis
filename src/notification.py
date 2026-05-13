@@ -927,20 +927,37 @@ class NotificationService(
             "",
         ]
 
-        # === 新增：分析结果摘要 (Issue #112) ===
+        # === 分析结果摘要 (Issue #112) ===
         if results:
             report_lines.extend([
                 f"## 📊 {labels['summary_heading']}",
                 "",
             ])
-            for r in sorted_results:
+            # 评分分布
+            strong_buy = [r for r in sorted_results if r.sentiment_score >= 70]
+            watch = [r for r in sorted_results if 40 <= r.sentiment_score < 70]
+            caution = [r for r in sorted_results if r.sentiment_score < 40]
+            if strong_buy:
+                avg_strong = sum(r.sentiment_score for r in strong_buy) / len(strong_buy)
+            else:
+                avg_strong = 0
+            score_distribution = (
+                f"> {len(results)}只 | "
+                f"强势(≥70): {len(strong_buy)}只 均{avg_strong:.0f}分 | "
+                f"中性(40-70): {len(watch)}只 | "
+                f"谨慎(<40): {len(caution)}只"
+            )
+            report_lines.append(score_distribution)
+            report_lines.append("")
+            for i, r in enumerate(sorted_results):
                 _, signal_emoji, _ = self._get_signal_level(r)
                 display_name = self._get_display_name(r, report_language)
+                one = (r.analysis_summary or '')[:40]
                 report_lines.append(
-                    f"{signal_emoji} **{display_name}({r.code})**: "
+                    f"{i+1}. {signal_emoji} **{display_name}({r.code})**: "
                     f"{localize_operation_advice(r.operation_advice, report_language)} | "
-                    f"{labels['score_label']} {r.sentiment_score} | "
-                    f"{localize_trend_prediction(r.trend_prediction, report_language)}"
+                    f"{r.sentiment_score}分"
+                    f"{' — ' + one if one else ''}"
                 )
             report_lines.extend([
                 "",
@@ -1438,31 +1455,40 @@ class NotificationService(
             )
             if out:
                 return out
-        # Fallback: brief summary from dashboard report
+        # Fallback: brief summary grouped by signal
         if not results:
             return f"# {report_date} {labels['brief_title']}\n\n{labels['no_results']}"
         sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
-        buy_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'buy')
-        sell_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'sell')
-        hold_count = sum(1 for r in results if getattr(r, 'decision_type', '') in ('hold', ''))
+        buy_results = [r for r in sorted_results if getattr(r, 'decision_type', '') == 'buy']
+        sell_results = [r for r in sorted_results if getattr(r, 'decision_type', '') == 'sell']
+        hold_results = [r for r in sorted_results if getattr(r, 'decision_type', '') in ('hold', '')]
         lines = [
             f"# {report_date} {labels['brief_title']}",
             "",
-            f"> {len(results)} {labels['stock_unit_compact']} | 🟢{buy_count} 🟡{hold_count} 🔴{sell_count}",
+            f"> {len(results)} {labels['stock_unit_compact']} | 🟢{len(buy_results)} 🟡{len(hold_results)} 🔴{len(sell_results)}",
             "",
         ]
-        for r in sorted_results:
-            _, emoji, _ = self._get_signal_level(r)
-            name = self._get_display_name(r, report_language)
-            dash = r.dashboard or {}
-            core = dash.get('core_conclusion', {}) or {}
-            one = (core.get('one_sentence') or r.analysis_summary or '')[:60]
-            lines.append(
-                f"**{name}({r.code})** {emoji} "
-                f"{localize_operation_advice(r.operation_advice, report_language)} | "
-                f"{labels['score_label']} {r.sentiment_score} | {one}"
-            )
-        lines.append("")
+
+        def _append_group(group_results, emoji_prefix, group_label):
+            if not group_results:
+                return
+            lines.append(f"**{emoji_prefix} {group_label}（{len(group_results)}）**")
+            for r in group_results:
+                name = self._get_display_name(r, report_language)
+                one = (r.analysis_summary or '')[:60]
+                lines.append(
+                    f"- **{name}({r.code})** 评分 {r.sentiment_score}"
+                    f"{' — ' + one if one else ''}"
+                )
+            lines.append("")
+
+        _append_group(buy_results, "🟢",
+                      labels.get('buy_label', '关注'))
+        _append_group(hold_results, "🟡",
+                      labels.get('watch_label', '观察'))
+        _append_group(sell_results, "🔴",
+                      labels.get('sell_label', '风险'))
+
         lines.append(f"*{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
         return "\n".join(lines)
 

@@ -445,16 +445,21 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
     def generate_market_review(self, overview: MarketOverview, news: List) -> str:
         """
         使用大模型生成大盘复盘报告
-        
+
         Args:
             overview: 市场概览数据
             news: 市场新闻列表 (SearchResult 对象列表)
-            
+
         Returns:
             大盘复盘报告文本
         """
-        if not self.analyzer or not self.analyzer.is_available():
-            logger.warning("[大盘] AI分析器未配置或不可用，使用模板生成报告")
+        # Check skip_llm_analysis config flag
+        skip_llm = getattr(getattr(self, 'config', None), 'skip_llm_analysis', False)
+        if not self.analyzer or not self.analyzer.is_available() or skip_llm:
+            if skip_llm:
+                logger.info("[大盘] SKIP_LLM_ANALYSIS=true，使用模板生成报告")
+            else:
+                logger.warning("[大盘] AI分析器未配置或不可用，使用模板生成报告")
             return self._generate_template_review(overview, news)
         
         # 构建 Prompt
@@ -1104,40 +1109,64 @@ Output the report content directly, no extra commentary.
         bottom_text = separator.join([s['name'] for s in overview.bottom_sectors[:3]])
 
         if template_language == "en":
-            stats_section = ""
-            if self.profile.has_market_stats:
-                stats_section = f"""
-### 3. Breadth & Liquidity
-| Metric | Value |
-|--------|-------|
-| Advancers | {overview.up_count} |
-| Decliners | {overview.down_count} |
-| Limit-up | {overview.limit_up_count} |
-| Limit-down | {overview.limit_down_count} |
-| Turnover ({self._get_turnover_unit_label()}) | {overview.total_amount:.0f} |
-"""
-            sector_section = ""
-            if self.profile.has_sector_rankings and (top_text or bottom_text):
-                sector_section = f"""
-### 4. Sector Highlights
-- **Leaders**: {top_text or "N/A"}
-- **Laggards**: {bottom_text or "N/A"}
-"""
+            light = self.build_market_light_snapshot(overview)
+            score = light.get('score', -1)
+            light_status = light.get('status', 'yellow')
+            guidance_text = light.get('guidance', 'Wait for confirmation.')
+
+            participation = overview.up_count + overview.down_count
+            up_ratio = overview.up_count / participation if participation else 0.5
+            limit_spread = overview.limit_up_count - overview.limit_down_count
+
+            if limit_spread > 20:
+                sentiment_note = f"Limit-up {overview.limit_up_count} / Limit-down {overview.limit_down_count} (spread {limit_spread:+d}), strong short-term sentiment."
+            elif limit_spread > 0:
+                sentiment_note = f"Limit-up {overview.limit_up_count} / Limit-down {overview.limit_down_count} (spread {limit_spread:+d}), moderate short-term sentiment."
+            else:
+                sentiment_note = f"Limit-up {overview.limit_up_count} / Limit-down {overview.limit_down_count} (spread {limit_spread:+d}), weak short-term sentiment."
+
+            if up_ratio > 0.6:
+                breadth_note = f"Advancers ratio {up_ratio:.0%}, breadth is favorable."
+            elif up_ratio > 0.4:
+                breadth_note = f"Advancers ratio {up_ratio:.0%}, breadth is mixed."
+            else:
+                breadth_note = f"Advancers ratio {up_ratio:.0%}, breadth is weak."
+
+            sector_contrast = ""
+            if top_text and bottom_text:
+                top_change = overview.top_sectors[0].get('change_pct', 0) if overview.top_sectors else 0
+                bottom_change = overview.bottom_sectors[0].get('change_pct', 0) if overview.bottom_sectors else 0
+                sector_spread = top_change - bottom_change
+                if sector_spread > 5:
+                    sector_contrast = f"Wide divergence between leading and lagging sectors (spread {sector_spread:.1f}%)."
+                elif sector_spread > 2:
+                    sector_contrast = f"Moderate sector divergence (spread {sector_spread:.1f}%)."
+                else:
+                    sector_contrast = f"Low sector divergence (spread {sector_spread:.1f}%), no clear leader."
+
+            conclusion_map = {"green": "Market is constructive.", "yellow": "Signals are mixed.", "red": "Market is defensive."}
+            conclusion = conclusion_map.get(light_status, "Wait and observe.")
+
             market_names = {"us": "US Market Recap", "hk": "HK Market Recap"}
             market_name = market_names.get(self.region, "A-share Market Recap")
             report = f"""## {overview.date} {market_name}
 
-### 1. Market Summary
-Today's {self._get_market_scope_name(template_language)} showed **{market_mood}**.
+> {market_mood} | Temperature **{score}/100** | Adv {overview.up_count} / Dec {overview.down_count} | Vol {overview.total_amount:.0f}
 
-### 2. Major Indices
+### 1. Major Indices
 {indices_text or "- No index data available"}
-{stats_section}
-{sector_section}
-### 5. Risk Alerts
-Market conditions can change quickly. The data above is for reference only and does not constitute investment advice.
 
-{self._get_strategy_markdown_block(template_language)}
+### 2. Sector Movers
+- **Leaders**: {top_text or "N/A"}
+- **Laggards**: {bottom_text or "N/A"}{sector_contrast}
+
+### 3. Market Sentiment
+- **Breadth**: {breadth_note}
+- **Sentiment**: {sentiment_note}
+- **Turnover**: {overview.total_amount:.0f} {self._get_turnover_unit_label()}
+
+### 4. Trading Reference
+- {conclusion} | Focus: {top_text or "leading sectors"} | Avoid: {bottom_text or "lagging sectors"}
 
 ---
 *Review Time: {datetime.now().strftime('%H:%M')}*
@@ -1149,33 +1178,82 @@ Market conditions can change quickly. The data above is for reference only and d
         dashboard_block = self._build_stats_block(overview)
         indices_block = self._build_indices_block(overview)
         sector_block = self._build_sector_block(overview)
+
+        # 计算衍生指标
+        light = self.build_market_light_snapshot(overview) if hasattr(self, 'build_market_light_snapshot') else None
+        score = light.get('score', -1) if light else -1
+        light_status = light.get('status', 'yellow') if light else 'yellow'
+        guidance_text = light.get('guidance', '均衡观察，等待确认。') if light else '均衡观察，等待确认。'
+        participation = overview.up_count + overview.down_count
+        up_ratio = overview.up_count / participation if participation else 0.5
+        limit_spread = overview.limit_up_count - overview.limit_down_count
+
+        # 情绪描述
+        if limit_spread > 20:
+            sentiment_note = f"涨停{overview.limit_up_count}家、跌停{overview.limit_down_count}家，涨跌停差{limit_spread:+d}，短线情绪活跃。"
+        elif limit_spread > 0:
+            sentiment_note = f"涨停{overview.limit_up_count}家、跌停{overview.limit_down_count}家，涨跌停差{limit_spread:+d}，短线情绪温和。"
+        elif limit_spread > -10:
+            sentiment_note = f"涨停{overview.limit_up_count}家、跌停{overview.limit_down_count}家，涨跌停差{limit_spread:+d}，短线情绪偏弱。"
+        else:
+            sentiment_note = f"涨停{overview.limit_up_count}家、跌停{overview.limit_down_count}家，涨跌停差{limit_spread:+d}，短线情绪低迷。"
+
+        if up_ratio > 0.6:
+            breadth_note = f"上涨占比 {up_ratio:.0%}，赚钱效应较好。"
+        elif up_ratio > 0.4:
+            breadth_note = f"上涨占比 {up_ratio:.0%}，市场分化明显。"
+        else:
+            breadth_note = f"上涨占比 {up_ratio:.0%}，亏钱效应较强。"
+
+        turnover_note = self._describe_turnover(overview.total_amount) if overview.total_amount else "暂无成交额数据。"
+
+        # 板块强度对比
+        sector_contrast = ""
+        if top_text and bottom_text:
+            top_change = overview.top_sectors[0].get('change_pct', 0) if overview.top_sectors else 0
+            bottom_change = overview.bottom_sectors[0].get('change_pct', 0) if overview.bottom_sectors else 0
+            sector_spread = top_change - bottom_change
+            if sector_spread > 5:
+                sector_contrast = f"领涨与领跌板块分化明显（极差 {sector_spread:.1f}%），结构性行情特征显著。"
+            elif sector_spread > 2:
+                sector_contrast = f"板块间存在一定分化（极差 {sector_spread:.1f}%），关注主线持续性。"
+            else:
+                sector_contrast = f"板块间分化较小（极差 {sector_spread:.1f}%），市场缺乏明确主线。"
+            sector_contrast = f"\n- {sector_contrast}"
+
+        # 综合结论
+        conclusion_messages = {
+            "green": "市场整体偏强，可适当积极。",
+            "yellow": "信号分化，等待量价确认。",
+            "red": "市场偏弱，控制仓位优先。",
+        }
+        conclusion = conclusion_messages.get(light_status, "均衡观察。")
+
+        position_messages = {
+            "green": "可维持中等偏高仓位，关注主线延续性。",
+            "yellow": "维持中性仓位，等待指数与主线共振。",
+            "red": "建议降低仓位，等待风险释放。",
+        }
+        position_advice = position_messages.get(light_status, "控制在中性区间。")
+
         return f"""## {overview.date} 大盘复盘
 
-> 今日{market_label}市场整体呈现**{market_mood}**态势，优先观察指数承接、成交额变化和板块持续性。
+> {market_mood} | 温度 **{score}/100** | 上涨 {overview.up_count} / 下跌 {overview.down_count} | 成交 {overview.total_amount:.0f}亿
 
-### 一、盘面总览
-{dashboard_block or "暂无市场宽度数据。"}
-
-### 二、指数结构
+### 一、指数行情
 {indices_block or indices_text or "暂无指数数据。"}
 
-### 三、板块主线
-{sector_block or "- 暂无板块涨跌榜数据。"}
+### 二、板块涨跌
+{sector_block or "- 暂无板块涨跌榜数据。"}{sector_contrast}
 
-### 四、资金与情绪
-- 结合成交额和涨跌家数看，当前更适合等待确认，避免仅凭单一热点追高。
+### 三、市场情绪
+- **涨跌分布**：上涨 {overview.up_count} / 下跌 {overview.down_count} / 平盘 {overview.flat_count}（{breadth_note}）
+- **涨停/跌停**：{overview.limit_up_count} / {overview.limit_down_count}（{sentiment_note}）
+- **成交额**：{turnover_note}
 
-### 五、消息催化
-- 暂无可用新闻时，应降低对题材持续性的确定性判断。
-
-### 六、明日交易计划
-- **结论**：均衡观察。
-- **仓位**：控制在中性区间，等待指数与主线共振。
-- **关注方向**：{top_text or "强于指数的主线板块"}。
-- **回避方向**：{bottom_text or "连续走弱且缺少修复信号的方向"}。
-
-### 七、风险提示
-- 市场有风险，投资需谨慎。以上数据仅供参考，不构成投资建议。
+### 四、交易参考
+- {conclusion} {position_advice}
+- 关注：{top_text or "强于指数的主线板块"} | 回避：{bottom_text or "连续走弱方向"}
 
 ---
 *复盘时间: {datetime.now().strftime('%H:%M')}*

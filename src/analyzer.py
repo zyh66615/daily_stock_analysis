@@ -1349,6 +1349,259 @@ class AnalysisResult:
         return star_map.get(str(self.confidence_level or "").strip().lower(), "⭐⭐")
 
 
+def build_technical_analysis_result(
+    context: Dict[str, Any],
+    news_context: Optional[str] = None,
+) -> AnalysisResult:
+    """
+    基于技术指标、基本面和新闻直接生成分析结果（不调用 LLM）。
+
+    适用于无需 AI 分析的场景，将算法计算的技术信号映射为结构化的分析报告。
+    """
+    code = context.get('code', 'Unknown')
+    name = context.get('stock_name', code)
+    trend = context.get('trend_analysis', {}) or {}
+    realtime = context.get('realtime', {}) or {}
+    chip = context.get('chip', {}) or {}
+    fundamental = context.get('fundamental_context', {}) or {}
+    today = context.get('today', {}) or {}
+    yesterday = context.get('yesterday', {}) or {}
+
+    # 1. 映射信号
+    buy_signal = trend.get('buy_signal', '观望')
+    trend_status = trend.get('trend_status', '盘整')
+    signal_score = trend.get('signal_score', 50)
+    signal_reasons = trend.get('signal_reasons', []) or []
+    risk_factors = trend.get('risk_factors', []) or []
+
+    sentiment_score = max(0, min(100, signal_score))
+
+    trend_map = {
+        '强势多头': '强烈看多', '多头': '看多', '弱势多头': '谨慎看多',
+        '盘整': '震荡',
+        '弱势空头': '谨慎看空', '空头': '看空', '强势空头': '强烈看空',
+    }
+    trend_prediction = trend_map.get(trend_status, '震荡')
+
+    advice_map = {
+        '强烈买入': ('买入', 'buy'), '买入': ('买入', 'buy'),
+        '持有': ('持有', 'hold'),
+        '观望': ('观望', 'hold'),
+        '卖出': ('减仓', 'sell'), '强烈卖出': ('卖出', 'sell'),
+    }
+    op_advice, decision_type = advice_map.get(buy_signal, ('持有', 'hold'))
+
+    if signal_score >= 70:
+        confidence = '高'
+    elif signal_score >= 45:
+        confidence = '中'
+    else:
+        confidence = '低'
+
+    # 2. 技术面文本
+    ma_alignment = trend.get('ma_alignment', '')
+    volume_status = trend.get('volume_status', '')
+    volume_trend = trend.get('volume_trend', '')
+    trend_strength = trend.get('trend_strength', 0)
+    bias_ma5 = trend.get('bias_ma5', 0)
+    macd_status_str = trend.get('macd_status', '')
+    macd_signal = trend.get('macd_signal', '')
+    rsi_6 = trend.get('rsi_6', 0)
+    rsi_status_str = trend.get('rsi_status', '')
+
+    ma5 = trend.get('ma5', 0)
+    ma10 = trend.get('ma10', 0)
+    ma20 = trend.get('ma20', 0)
+    ma60 = trend.get('ma60', 0)
+
+    tech_parts = []
+    if ma_alignment:
+        tech_parts.append(f"均线排列：{ma_alignment}")
+    if trend_strength:
+        tech_parts.append(f"趋势强度：{trend_strength:.0f}/100")
+    if bias_ma5:
+        tech_parts.append(f"乖离率(MA5)：{bias_ma5:+.2f}%")
+    if volume_status:
+        tech_parts.append(f"量能：{volume_status}")
+        if volume_trend:
+            tech_parts.append(f"量能趋势：{volume_trend}")
+    technical_analysis_text = ' | '.join(tech_parts)
+
+    # 3. 均线
+    ma_parts = []
+    for v, k in [(ma5, 'MA5'), (ma10, 'MA10'), (ma20, 'MA20'), (ma60, 'MA60')]:
+        if v:
+            ma_parts.append(f"{k}={v:.2f}")
+    ma_analysis_text = f"{ma_alignment}：{' '.join(ma_parts)}" if ma_alignment and ma_parts else '、'.join(ma_parts)
+
+    # 4. MACD + RSI
+    macd_parts = [f"MACD：{macd_status_str}"] if macd_status_str else []
+    if macd_signal:
+        macd_parts.append(macd_signal)
+
+    rsi_parts = []
+    if rsi_6:
+        rsi_parts.append(f"RSI(6)={rsi_6:.1f}")
+    if rsi_status_str:
+        rsi_parts.append(rsi_status_str)
+
+    # 5. 量能
+    volume_ratio_5d = trend.get('volume_ratio_5d', 0)
+    vol_parts = [f"量能：{volume_status}"] if volume_status else []
+    if volume_ratio_5d:
+        vol_parts.append(f"量比(5日)={volume_ratio_5d:.2f}")
+
+    # 6. 支撑压力
+    support_levels = trend.get('support_levels', []) or []
+    resistance_levels = trend.get('resistance_levels', []) or []
+    support_ma5 = trend.get('support_ma5', False)
+    support_ma10 = trend.get('support_ma10', False)
+    pattern_parts = []
+    if support_levels:
+        pattern_parts.append(f"支撑位：{'、'.join(f'{s:.2f}' for s in support_levels[:3])}")
+    if resistance_levels:
+        pattern_parts.append(f"压力位：{'、'.join(f'{r:.2f}' for r in resistance_levels[:3])}")
+    if support_ma5 and ma5:
+        pattern_parts.append(f"MA5({ma5:.2f})支撑有效")
+    if support_ma10 and ma10:
+        pattern_parts.append(f"MA10({ma10:.2f})支撑有效")
+
+    # 7. 基本面
+    fund_parts = []
+    if isinstance(fundamental, dict):
+        pe = fundamental.get('pe_ttm') or fundamental.get('pe')
+        pb = fundamental.get('pb')
+        roe = fundamental.get('roe')
+        mcap = fundamental.get('market_capital') or fundamental.get('total_mv')
+        if pe:
+            fund_parts.append(f"PE={pe}")
+        if pb:
+            fund_parts.append(f"PB={pb}")
+        if roe:
+            fund_parts.append(f"ROE={roe}%")
+        if mcap:
+            fund_parts.append(f"市值={'{:.2f}万亿'.format(mcap / 10000) if mcap >= 10000 else '{:.0f}亿'.format(mcap)}")
+
+    # 8. 筹码分布
+    chip_parts = []
+    if isinstance(chip, dict):
+        pr = chip.get('profit_ratio')
+        cc = chip.get('concentration_90')
+        cs = chip.get('chip_status')
+        if pr is not None:
+            chip_parts.append(f"获利比例 {pr:.1%}")
+        if cc is not None:
+            chip_parts.append(f"90%集中度 {cc:.2%}")
+        if cs:
+            chip_parts.append(f"筹码：{cs}")
+
+    # 9. 行情
+    price = realtime.get('price', '')
+    change_pct = realtime.get('change_pct', '')
+    vr = realtime.get('volume_ratio', '')
+    tr = realtime.get('turnover_rate', '')
+
+    reasons_text = '；'.join(signal_reasons) if signal_reasons else ''
+    risks_text = '；'.join(risk_factors) if risk_factors else ''
+
+    # 10. 构建摘要
+    summary_parts = []
+    if ma_analysis_text:
+        summary_parts.append(f"技术面：{ma_analysis_text}。")
+    if macd_parts:
+        summary_parts.append(f"MACD：{' | '.join(macd_parts)}。")
+    if rsi_parts:
+        summary_parts.append(f"RSI：{' | '.join(rsi_parts)}。")
+    if reasons_text:
+        summary_parts.append(f"信号：{reasons_text}。")
+    if fund_parts:
+        summary_parts.append("基本面：" + ' | '.join(fund_parts) + "。")
+    if chip_parts:
+        summary_parts.append(' | '.join(chip_parts) + "。")
+    analysis_summary = '\n'.join(summary_parts)
+
+    # 关键看点
+    key_parts = []
+    if signal_reasons:
+        key_parts.append(f"• 技术信号：{'；'.join(signal_reasons[:3])}")
+    if risk_factors:
+        key_parts.append(f"• 风险因素：{'；'.join(risk_factors[:2])}")
+    if macd_status_str:
+        key_parts.append(f"• MACD：{macd_status_str}")
+    if rsi_status_str:
+        key_parts.append(f"• RSI：{rsi_status_str}")
+
+    risk_warning = "市场有风险，投资需谨慎。"
+    if risks_text:
+        risk_warning += f" 主要风险：{risks_text}"
+
+    # 行情快照
+    prev_close = yesterday.get('close') if isinstance(yesterday, dict) else None
+    high = today.get('high') if isinstance(today, dict) else None
+    low = today.get('low') if isinstance(today, dict) else None
+    amplitude = None
+    if prev_close not in (None, 0) and high is not None and low is not None:
+        try:
+            amplitude = (float(high) - float(low)) / float(prev_close) * 100
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+
+    def _fmt(v, fmt_str=".2f"):
+        if isinstance(v, (int, float)):
+            return f"{v:{fmt_str}}"
+        return str(v) if v else ''
+
+    market_snapshot = {
+        "date": context.get('date', '未知'),
+        "close": _fmt(price),
+        "open": _fmt(today.get('open')) if isinstance(today, dict) else '',
+        "high": _fmt(high),
+        "low": _fmt(low),
+        "prev_close": _fmt(prev_close),
+        "pct_chg": f"{change_pct:+.2f}%" if isinstance(change_pct, (int, float)) else str(change_pct or ''),
+        "amplitude": _fmt(amplitude) + '%' if amplitude else '',
+        "volume_ratio": str(vr) if vr else '',
+        "turnover_rate": f"{tr:.2%}" if isinstance(tr, (int, float)) else str(tr or ''),
+        "source": str(realtime.get('source', 'N/A')),
+    }
+
+    result = AnalysisResult(
+        code=code,
+        name=name,
+        sentiment_score=sentiment_score,
+        trend_prediction=trend_prediction,
+        operation_advice=op_advice,
+        decision_type=decision_type,
+        confidence_level=confidence,
+        trend_analysis=trend_status,
+        technical_analysis=technical_analysis_text,
+        ma_analysis=ma_analysis_text,
+        volume_analysis=' | '.join(vol_parts),
+        pattern_analysis='\n'.join(pattern_parts),
+        fundamental_analysis=' | '.join(fund_parts),
+        news_summary=news_context if news_context else '',
+        market_sentiment=trend_status,
+        analysis_summary=analysis_summary,
+        key_points='\n'.join(key_parts) if key_parts else '',
+        risk_warning=risk_warning,
+        buy_reason=reasons_text,
+        market_snapshot=market_snapshot,
+        search_performed=bool(news_context),
+        data_sources=f"技术分析(signal_score={signal_score})",
+        success=True,
+        current_price=price if isinstance(price, (int, float)) else None,
+        change_pct=change_pct if isinstance(change_pct, (int, float)) else None,
+        model_used=None,
+        report_language='zh',
+    )
+
+    logger.info(
+        "[Technical] %s(%s) 技术分析完成: %s, 评分 %s",
+        name, code, trend_prediction, sentiment_score,
+    )
+    return result
+
+
 class GeminiAnalyzer:
     """
     Gemini AI 分析器

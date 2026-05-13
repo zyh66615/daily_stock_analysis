@@ -841,6 +841,7 @@ class Config:
     # === 定时任务配置 ===
     schedule_enabled: bool = False            # 是否启用定时任务
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
+    skip_llm_analysis: bool = False           # 跳过 LLM 分析，仅使用技术指标和模板生成报告
     schedule_market_review_times: str = ""    # 大盘复盘多时间点（逗号分隔 HH:MM，非空时覆盖 SCHEDULE_TIME）
     schedule_stock_analysis_times: str = ""   # 个股分析多时间点（逗号分隔 HH:MM，非空时覆盖 SCHEDULE_TIME）
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
@@ -1593,6 +1594,7 @@ class Config:
                 prefer_env_file=True,
             ).lower() == 'true',
             schedule_time=(schedule_time_value or '18:00').strip() or '18:00',
+            skip_llm_analysis=os.getenv('SKIP_LLM_ANALYSIS', 'false').lower() == 'true',
             schedule_market_review_times=(os.getenv('SCHEDULE_MARKET_REVIEW_TIMES') or '').strip(),
             schedule_stock_analysis_times=(os.getenv('SCHEDULE_STOCK_ANALYSIS_TIMES') or '').strip(),
             schedule_run_immediately=schedule_run_immediately,

@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [新功能] 跳过 LLM 分析模式：新增 SKIP_LLM_ANALYSIS 配置开关和 --no-llm CLI 参数，开启后个股分析和大盘复盘使用技术指标与模板直接生成报告，无需配置 AI 模型。
 - [新功能] 定时任务支持同一天多个时间点执行大盘复盘和自选股分析：新增 SCHEDULE_MARKET_REVIEW_TIMES 和 SCHEDULE_STOCK_ANALYSIS_TIMES 配置（逗号分隔 HH:MM），非空时自动启用多时间点模式，向下兼容旧 SCHEDULE_TIME 单时间点模式。
 - [修复] 聚合报告通知按静态渠道隔离发送失败，并补充自定义 Webhook 部分成功诊断与脱敏测试。
 - [修复] 未配置 Tushare / Longbridge 凭据时不再实例化对应可选 fetcher，避免缺失凭据的数据源进入候选集。

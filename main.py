@@ -305,6 +305,12 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        '--no-llm',
+        action='store_true',
+        help='跳过 LLM 分析，仅使用技术指标和模板生成报告'
+    )
+
+    parser.add_argument(
         '--force-run',
         action='store_true',
         help='跳过交易日检查，强制执行全量分析（Issue #373）'
