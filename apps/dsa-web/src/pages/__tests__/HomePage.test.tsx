@@ -43,6 +43,7 @@ vi.mock('../../api/analysis', async () => {
 vi.mock('../../api/systemConfig', () => ({
   systemConfigApi: {
     getSetupStatus: vi.fn(),
+    getConfig: vi.fn(),
   },
 }));
 
@@ -89,6 +90,18 @@ describe('HomePage', () => {
       requiredMissingKeys: [],
       nextStepKey: null,
       checks: [],
+    });
+    vi.mocked(systemConfigApi.getConfig).mockResolvedValue({
+      configVersion: 'v-test',
+      maskToken: '******',
+      items: [
+        {
+          key: 'STOCK_LIST',
+          value: '600519,300750,AAPL',
+          rawValueExists: true,
+          isMasked: false,
+        },
+      ],
     });
   });
 
@@ -490,5 +503,43 @@ describe('HomePage', () => {
       originalQuery: '600519',
       forceRefresh: true,
     }));
+  });
+
+  it('submits one-click analyze-all tasks from STOCK_LIST', async () => {
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      accepted: [
+        { taskId: 'task-1', stockCode: '600519', status: 'pending' },
+        { taskId: 'task-2', stockCode: '300750', status: 'pending' },
+        { taskId: 'task-3', stockCode: 'AAPL', status: 'pending' },
+      ],
+      duplicates: [],
+      message: 'Batch accepted',
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '一键分析全部' }));
+
+    await waitFor(() => {
+      expect(systemConfigApi.getConfig).toHaveBeenCalledWith(false);
+      expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stockCodes: ['600519', '300750', 'AAPL'],
+          originalQuery: 'STOCK_LIST',
+          notify: true,
+        }),
+      );
+    });
+    expect(await screen.findByText('已提交全部个股分析')).toBeInTheDocument();
   });
 });

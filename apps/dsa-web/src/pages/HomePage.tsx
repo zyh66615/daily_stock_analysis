@@ -26,6 +26,7 @@ const HomePage: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isSubmittingMarketReview, setIsSubmittingMarketReview] = useState(false);
+  const [isSubmittingAnalyzeAll, setIsSubmittingAnalyzeAll] = useState(false);
   const [marketReviewNotice, setMarketReviewNotice] = useState<MarketReviewNotice>(null);
   const [marketReviewError, setMarketReviewError] = useState<ParsedApiError | null>(null);
   const [marketReviewReport, setMarketReviewReport] = useState<string | null>(null);
@@ -323,6 +324,50 @@ const HomePage: React.FC = () => {
     }
   }, [notify, pollMarketReviewStatus, scrollMarketReviewFeedbackIntoView]);
 
+  const handleAnalyzeAllStocks = useCallback(async () => {
+    setIsSubmittingAnalyzeAll(true);
+    setMarketReviewNotice(null);
+    setMarketReviewError(null);
+    scrollMarketReviewFeedbackIntoView();
+    try {
+      const config = await systemConfigApi.getConfig(false);
+      const stockListItem = config.items.find((item) => item.key === 'STOCK_LIST');
+      const stockCodes = (stockListItem?.value || '')
+        .split(',')
+        .map((code) => code.trim())
+        .filter((code) => code.length > 0);
+
+      if (stockCodes.length === 0) {
+        setMarketReviewNotice({
+          variant: 'warning',
+          title: '未找到自选股配置',
+          message: '请先在系统设置中配置 STOCK_LIST。',
+        });
+        return;
+      }
+
+      await analysisApi.analyzeAsync({
+        stockCodes,
+        reportType: 'detailed',
+        originalQuery: 'STOCK_LIST',
+        selectionSource: 'manual',
+        notify,
+      });
+
+      setMarketReviewNotice({
+        variant: 'success',
+        title: '已提交全部个股分析',
+        message: `已提交 ${stockCodes.length} 只股票的分析任务，可在左侧任务列表查看进度。`,
+      });
+    } catch (err: unknown) {
+      setMarketReviewError(getParsedApiError(err));
+      setMarketReviewNotice(null);
+    } finally {
+      setIsSubmittingAnalyzeAll(false);
+      scrollMarketReviewFeedbackIntoView();
+    }
+  }, [notify, scrollMarketReviewFeedbackIntoView]);
+
   const handleCopyMarketReviewReport = useCallback(() => {
     if (!marketReviewReport) {
       return;
@@ -433,6 +478,18 @@ const HomePage: React.FC = () => {
               >
                 <BarChart3 className="h-4 w-4" aria-hidden="true" />
                 大盘复盘
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="md"
+                isLoading={isSubmittingAnalyzeAll}
+                loadingText="提交中"
+                onClick={() => void handleAnalyzeAllStocks()}
+                className="h-10 flex-1 whitespace-nowrap md:flex-none"
+                disabled={isAnalyzing}
+              >
+                一键分析全部
               </Button>
               <button
                 type="button"
