@@ -753,6 +753,67 @@ def _build_schedule_time_provider(default_schedule_time: str):
     return _provider
 
 
+def _parse_schedule_times(times_str: str) -> List[str]:
+    """Parse a comma-separated list of HH:MM times, return valid times only."""
+    if not times_str or not times_str.strip():
+        return []
+    parts = [t.strip() for t in times_str.split(",") if t.strip()]
+    valid = []
+    for p in parts:
+        import re
+        if re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", p):
+            valid.append(p)
+        else:
+            logger.warning("忽略无效的时间格式: %s（应为 HH:MM）", p)
+    return valid
+
+
+def _build_full_analysis_task(args: argparse.Namespace, stock_codes: Optional[List[str]]) -> Callable:
+    """Build a closure that runs full analysis (stock analysis + market review)."""
+    def _task():
+        runtime_config = _reload_runtime_config()
+        run_full_analysis(runtime_config, args, stock_codes)
+    return _task
+
+
+def _build_market_review_scheduled_task(args: argparse.Namespace) -> Callable:
+    """Build a closure that runs only market review for scheduled tasks."""
+    from src.core.market_review import run_market_review
+    from src.core.market_review_runtime import build_market_review_runtime
+
+    force_run = getattr(args, 'force_run', False)
+    send_notification = not args.no_notify
+
+    def _task():
+        runtime_config = _reload_runtime_config()
+
+        # Trading day check (same logic as --market-review mode)
+        effective_region = None
+        if not force_run and getattr(runtime_config, 'trading_day_check_enabled', True):
+            from src.core.trading_calendar import get_open_markets_today, compute_effective_region as _compute_region
+            open_markets = get_open_markets_today()
+            effective_region = _compute_region(
+                getattr(runtime_config, 'market_review_region', 'cn') or 'cn', open_markets
+            )
+            if effective_region == '':
+                logger.info("今日大盘复盘相关市场均为非交易日，跳过本次大盘复盘。")
+                return
+
+        logger.info("定时任务: 仅大盘复盘")
+        notifier, analyzer, search_service = build_market_review_runtime(runtime_config)
+        _run_market_review_with_shared_lock(
+            runtime_config,
+            run_market_review,
+            notifier=notifier,
+            analyzer=analyzer,
+            search_service=search_service,
+            send_notification=send_notification,
+            override_region=effective_region,
+        )
+
+    return _task
+
+
 def main() -> int:
     """
     主入口函数
@@ -915,55 +976,122 @@ def main() -> int:
 
         # 模式2: 定时任务模式
         if args.schedule or config.schedule_enabled:
-            logger.info("模式: 定时任务")
-            logger.info(f"每日执行时间: {config.schedule_time}")
+            # 检测是否启用多时间点模式
+            mr_times = _parse_schedule_times(config.schedule_market_review_times)
+            sa_times = _parse_schedule_times(config.schedule_stock_analysis_times)
 
-            # Determine whether to run immediately:
-            # Command line arg --no-run-immediately overrides config if present.
-            # Otherwise use config (defaults to True).
-            should_run_immediately = config.schedule_run_immediately
-            if getattr(args, 'no_run_immediately', False):
-                should_run_immediately = False
+            if mr_times or sa_times:
+                # === 多时间点模式 ===
+                logger.info("模式: 多时间点定时任务")
+                if mr_times:
+                    logger.info("大盘复盘执行时间点: %s", ", ".join(mr_times))
+                if sa_times:
+                    logger.info("个股分析执行时间点: %s", ", ".join(sa_times))
 
-            logger.info(f"启动时立即执行: {should_run_immediately}")
+                from src.scheduler import Scheduler
 
-            from src.scheduler import run_with_schedule
-            scheduled_stock_codes = _resolve_scheduled_stock_codes(stock_codes)
-            schedule_time_provider = _build_schedule_time_provider(config.schedule_time)
+                scheduled_stock_codes = _resolve_scheduled_stock_codes(stock_codes)
+                scheduler = Scheduler()
 
-            def scheduled_task():
-                runtime_config = _reload_runtime_config()
-                run_full_analysis(runtime_config, args, scheduled_stock_codes)
+                # 注册大盘复盘定时任务
+                for t in mr_times:
+                    scheduler.add_daily_task(
+                        f"market_review@{t}",
+                        _build_market_review_scheduled_task(args),
+                        t,
+                    )
 
-            background_tasks = []
-            if getattr(config, 'agent_event_monitor_enabled', False):
-                from src.agent.events import build_event_monitor_from_config, run_event_monitor_once
+                # 注册个股分析定时任务（包含大盘复盘）
+                for t in sa_times:
+                    scheduler.add_daily_task(
+                        f"stock_analysis@{t}",
+                        _build_full_analysis_task(args, scheduled_stock_codes),
+                        t,
+                    )
 
-                monitor = build_event_monitor_from_config(config)
-                if monitor is not None:
-                    interval_minutes = max(1, getattr(config, 'agent_event_monitor_interval_minutes', 5))
+                # 注册后台任务（可选的事件监控）
+                background_tasks = []
+                if getattr(config, 'agent_event_monitor_enabled', False):
+                    from src.agent.events import build_event_monitor_from_config, run_event_monitor_once
 
-                    def event_monitor_task():
-                        triggered = run_event_monitor_once(monitor)
-                        if triggered:
-                            logger.info("[EventMonitor] 本轮触发 %d 条提醒", len(triggered))
+                    monitor = build_event_monitor_from_config(config)
+                    if monitor is not None:
+                        interval_minutes = max(1, getattr(config, 'agent_event_monitor_interval_minutes', 5))
 
-                    background_tasks.append({
-                        "task": event_monitor_task,
-                        "interval_seconds": interval_minutes * 60,
-                        "run_immediately": True,
-                        "name": "agent_event_monitor",
-                    })
-                else:
-                    logger.info("EventMonitor 已启用，但未加载到有效规则，跳过后台提醒任务")
+                        def event_monitor_task():
+                            triggered = run_event_monitor_once(monitor)
+                            if triggered:
+                                logger.info("[EventMonitor] 本轮触发 %d 条提醒", len(triggered))
 
-            run_with_schedule(
-                task=scheduled_task,
-                schedule_time=config.schedule_time,
-                run_immediately=should_run_immediately,
-                background_tasks=background_tasks,
-                schedule_time_provider=schedule_time_provider,
-            )
+                        background_tasks.append({
+                            "task": event_monitor_task,
+                            "interval_seconds": interval_minutes * 60,
+                            "run_immediately": True,
+                            "name": "agent_event_monitor",
+                        })
+                    else:
+                        logger.info("EventMonitor 已启用，但未加载到有效规则，跳过后台提醒任务")
+
+                for entry in background_tasks:
+                    scheduler.add_background_task(
+                        task=entry["task"],
+                        interval_seconds=entry["interval_seconds"],
+                        run_immediately=entry.get("run_immediately", False),
+                        name=entry.get("name"),
+                    )
+
+                scheduler.run()
+            else:
+                # === 单时间点模式（向下兼容） ===
+                logger.info("模式: 定时任务")
+                logger.info(f"每日执行时间: {config.schedule_time}")
+
+                # Determine whether to run immediately:
+                # Command line arg --no-run-immediately overrides config if present.
+                # Otherwise use config (defaults to True).
+                should_run_immediately = config.schedule_run_immediately
+                if getattr(args, 'no_run_immediately', False):
+                    should_run_immediately = False
+
+                logger.info(f"启动时立即执行: {should_run_immediately}")
+
+                from src.scheduler import run_with_schedule
+                scheduled_stock_codes = _resolve_scheduled_stock_codes(stock_codes)
+                schedule_time_provider = _build_schedule_time_provider(config.schedule_time)
+
+                def scheduled_task():
+                    runtime_config = _reload_runtime_config()
+                    run_full_analysis(runtime_config, args, scheduled_stock_codes)
+
+                background_tasks = []
+                if getattr(config, 'agent_event_monitor_enabled', False):
+                    from src.agent.events import build_event_monitor_from_config, run_event_monitor_once
+
+                    monitor = build_event_monitor_from_config(config)
+                    if monitor is not None:
+                        interval_minutes = max(1, getattr(config, 'agent_event_monitor_interval_minutes', 5))
+
+                        def event_monitor_task():
+                            triggered = run_event_monitor_once(monitor)
+                            if triggered:
+                                logger.info("[EventMonitor] 本轮触发 %d 条提醒", len(triggered))
+
+                        background_tasks.append({
+                            "task": event_monitor_task,
+                            "interval_seconds": interval_minutes * 60,
+                            "run_immediately": True,
+                            "name": "agent_event_monitor",
+                        })
+                    else:
+                        logger.info("EventMonitor 已启用，但未加载到有效规则，跳过后台提醒任务")
+
+                run_with_schedule(
+                    task=scheduled_task,
+                    schedule_time=config.schedule_time,
+                    run_immediately=should_run_immediately,
+                    background_tasks=background_tasks,
+                    schedule_time_provider=schedule_time_provider,
+                )
             return 0
 
         # 模式3: 正常单次运行

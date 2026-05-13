@@ -841,6 +841,8 @@ class Config:
     # === 定时任务配置 ===
     schedule_enabled: bool = False            # 是否启用定时任务
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
+    schedule_market_review_times: str = ""    # 大盘复盘多时间点（逗号分隔 HH:MM，非空时覆盖 SCHEDULE_TIME）
+    schedule_stock_analysis_times: str = ""   # 个股分析多时间点（逗号分隔 HH:MM，非空时覆盖 SCHEDULE_TIME）
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
@@ -955,6 +957,8 @@ class Config:
             "SCHEDULE_ENABLED",
             "SCHEDULE_TIME",
             "SCHEDULE_RUN_IMMEDIATELY",
+            "SCHEDULE_MARKET_REVIEW_TIMES",
+            "SCHEDULE_STOCK_ANALYSIS_TIMES",
         }
     )
     _BOOTSTRAP_RUNTIME_ENV_OVERRIDES_CAPTURED = False
@@ -1589,6 +1593,8 @@ class Config:
                 prefer_env_file=True,
             ).lower() == 'true',
             schedule_time=(schedule_time_value or '18:00').strip() or '18:00',
+            schedule_market_review_times=(os.getenv('SCHEDULE_MARKET_REVIEW_TIMES') or '').strip(),
+            schedule_stock_analysis_times=(os.getenv('SCHEDULE_STOCK_ANALYSIS_TIMES') or '').strip(),
             schedule_run_immediately=schedule_run_immediately,
             run_immediately=legacy_run_immediately,
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',

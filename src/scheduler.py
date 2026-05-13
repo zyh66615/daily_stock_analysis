@@ -7,7 +7,8 @@
 职责：
 1. 支持每日定时执行股票分析
 2. 支持定时执行大盘复盘
-3. 优雅处理信号，确保可靠退出
+3. 支持同一天多个时间点执行不同任务
+4. 优雅处理信号，确保可靠退出
 
 依赖：
 - schedule: 轻量级定时任务库
@@ -58,7 +59,8 @@ class Scheduler:
     定时任务调度器
 
     基于 schedule 库实现，支持：
-    - 每日定时执行
+    - 每日单/多点定时执行
+    - 支持多个命名任务，同一时间点也可注册不同任务
     - 启动时立即执行
     - 优雅退出
     """
@@ -72,7 +74,9 @@ class Scheduler:
         初始化调度器
 
         Args:
-            schedule_time: 每日执行时间，格式 "HH:MM"
+            schedule_time: 每日执行时间，格式 "HH:MM"（仅用于旧版单任务模式）
+            schedule_time_provider: 可选的时间提供器；调度器每轮检查前会读取，
+                当返回值变化时自动重建 default daily job（仅旧版模式）
         """
         try:
             import schedule
@@ -84,14 +88,19 @@ class Scheduler:
         self.schedule_time = schedule_time
         self._schedule_time_provider = schedule_time_provider
         self.shutdown_handler = GracefulShutdown()
+        # 旧版单任务支持
         self._task_callback: Optional[Callable] = None
         self._daily_job: Optional[Any] = None
+        # 新版多任务支持：name -> {job, time, task}
+        self._daily_jobs: Dict[str, Dict[str, Any]] = {}
         self._background_tasks: List[Dict[str, Any]] = []
         self._running = False
 
+    # ==================== 旧版单任务接口（向下兼容） ====================
+
     def set_daily_task(self, task: Callable, run_immediately: bool = True):
         """
-        设置每日定时任务
+        设置每日定时任务（旧版单任务模式）
 
         Args:
             task: 要执行的任务函数（无参数）
@@ -105,6 +114,54 @@ class Scheduler:
             logger.info("立即执行一次任务...")
             self._safe_run_task()
 
+    # ==================== 新版多任务接口 ====================
+
+    def add_daily_task(
+        self,
+        name: str,
+        task: Callable,
+        schedule_time: str,
+        run_immediately: bool = False,
+    ):
+        """
+        注册一个指定时间的命名任务，可多次调用注册不同任务。
+
+        Args:
+            name: 任务唯一标识名（同名会覆盖旧任务）
+            task: 要执行的任务函数（无参数）
+            schedule_time: 每日执行时间，格式 "HH:MM"
+            run_immediately: 是否在注册后立即执行一次
+        """
+        candidate = (schedule_time or "").strip()
+        if not self._is_valid_schedule_time(candidate):
+            raise ValueError(f"无效的定时执行时间 {schedule_time!r}，格式应为 HH:MM")
+
+        # 移除同名的旧任务
+        self._cancel_named_job(name)
+
+        # 创建此任务的运行器
+        def _named_runner():
+            self._safe_run_named_task(name, task)
+
+        job = self.schedule.every().day.at(candidate).do(_named_runner)
+        self._daily_jobs[name] = {"job": job, "time": candidate, "task": task}
+        logger.info("已注册定时任务 [%s]，执行时间: %s", name, candidate)
+
+        if run_immediately:
+            logger.info("立即执行一次任务 [%s]...", name)
+            self._safe_run_named_task(name, task)
+
+    def remove_daily_task(self, name: str):
+        """按名称删除一个定时任务"""
+        self._cancel_named_job(name)
+
+    def clear_daily_tasks(self):
+        """删除所有命名定时任务（不包括旧版 default 任务）"""
+        for name in list(self._daily_jobs.keys()):
+            self._cancel_named_job(name)
+
+    # ==================== 内部方法 ====================
+
     @staticmethod
     def _is_valid_schedule_time(schedule_time: str) -> bool:
         """Validate time string in HH:MM 24-hour format."""
@@ -112,6 +169,8 @@ class Scheduler:
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", candidate):
             return False
         return True
+
+    # --- 旧版单任务管理 ---
 
     def _cancel_daily_job(self) -> None:
         """Remove the currently registered daily job if one exists."""
@@ -170,8 +229,28 @@ class Scheduler:
         if self._configure_daily_task(latest_schedule_time):
             logger.info("更新后的下次执行时间: %s", self._get_next_run_time())
 
+    # --- 新版命名任务管理 ---
+
+    def _cancel_named_job(self, name: str) -> None:
+        """Remove a named daily job by its identifier."""
+        entry = self._daily_jobs.pop(name, None)
+        if entry is None:
+            return
+
+        job = entry["job"]
+        if hasattr(self.schedule, "cancel_job"):
+            self.schedule.cancel_job(job)
+        else:  # pragma: no cover - compatibility fallback
+            jobs = getattr(self.schedule, "jobs", None)
+            if isinstance(jobs, list) and job in jobs:
+                jobs.remove(job)
+
+        logger.debug("已删除定时任务 [%s]", name)
+
+    # --- 任务运行器 ---
+
     def _safe_run_task(self):
-        """安全执行任务（带异常捕获）"""
+        """安全执行旧版默认任务（带异常捕获）"""
         if self._task_callback is None:
             return
 
@@ -186,6 +265,22 @@ class Scheduler:
 
         except Exception as e:
             logger.exception(f"定时任务执行失败: {e}")
+
+    def _safe_run_named_task(self, name: str, task: Callable):
+        """安全执行一个命名任务（带异常捕获）"""
+        try:
+            logger.info("=" * 50)
+            logger.info(f"定时任务 [{name}] 开始执行 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info("=" * 50)
+
+            task()
+
+            logger.info(f"定时任务 [{name}] 执行完成 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        except Exception as e:
+            logger.exception(f"定时任务 [{name}] 执行失败: {e}")
+
+    # --- 后台任务 ---
 
     def add_background_task(
         self,
@@ -270,6 +365,8 @@ class Scheduler:
                 continue
             self._start_background_task(entry)
 
+    # --- 主循环 ---
+
     def run(self):
         """
         运行调度器主循环
@@ -313,7 +410,7 @@ def run_with_schedule(
     schedule_time_provider: Optional[Callable[[], str]] = None,
 ):
     """
-    便捷函数：使用定时调度运行任务
+    便捷函数：使用定时调度运行任务（旧版单任务模式）
 
     Args:
         task: 要执行的任务函数
