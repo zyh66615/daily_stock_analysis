@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] Docker 启动入口自动修复 `data` / `logs` / `reports` 挂载目录权限并降权运行，文档化的 Compose `exec` 手动命令显式使用 `dsa` 用户，避免普通部署需要手动 `chown` / `chmod`。
 - [修复] Web 首页大盘复盘结果改由主内容滚动区承载，避免 loading 切换到长结果后下方报告区域被截断或无法继续滚动。
 - [修复] 大盘复盘执行后会同步写入 `analysis_history` 历史记录，避免仅生成/推送报告但历史列表缺失复盘记录。
+- [新功能] Web 首页新增“一键分析全部”入口：读取 `STOCK_LIST` 并一次性提交 `stock_codes` 批量分析任务，进度可在任务列表查看。
+- [新功能] 新增 Web 开发热更新模式：`python main.py --serve-only --web-dev` 时，后端将非 API 路由重定向到 `WEB_UI_DEV_SERVER`（默认 `http://127.0.0.1:5173`），支持 Vite HMR。
+- [改进] `uv run python main.py --web-ui` / `--webui` 默认启用前后端热重载：自动启动 `uvicorn --reload` 与 `npm run dev`；可通过 `WEB_UI_HOT_RELOAD=false` 关闭并回退旧模式。
 
 ## [3.16.0] - 2026-05-10
 

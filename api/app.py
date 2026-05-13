@@ -27,7 +27,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger(__name__)
@@ -199,9 +199,17 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     # 根路由和健康检查
     # ============================================================
     
+    web_dev_mode = os.environ.get("WEB_UI_DEV_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+    web_dev_server = (os.environ.get("WEB_UI_DEV_SERVER") or "http://127.0.0.1:5173").strip().rstrip("/")
     has_frontend = static_dir.exists() and (static_dir / "index.html").exists()
     
-    if has_frontend:
+    if web_dev_mode:
+        logger.info("Web 开发模式已启用：非 API 路由将重定向到 %s（支持 Vite HMR 热更新）", web_dev_server)
+
+        @app.get("/", include_in_schema=False)
+        async def root():
+            return RedirectResponse(url=f"{web_dev_server}/", status_code=307)
+    elif has_frontend:
         # Surface bundle inconsistencies as soon as the app starts so that
         # blank-page reports (#1064 / #1065 / #1050) can be diagnosed from
         # logs/desktop.log instead of via browser devtools.
@@ -262,7 +270,22 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     # 静态文件托管（前端 SPA）
     # ============================================================
     
-    if has_frontend:
+    if web_dev_mode:
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def serve_spa_dev(request: Request, full_path: str):
+            """Web 开发模式：将非 API 请求重定向到 Vite dev server。"""
+            if full_path == "api" or full_path.startswith("api/"):
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": "not_found", "message": f"API endpoint /{full_path} not found"}
+                )
+
+            target_path = full_path.lstrip("/")
+            target_url = f"{web_dev_server}/{target_path}" if target_path else f"{web_dev_server}/"
+            if request.url.query:
+                target_url = f"{target_url}?{request.url.query}"
+            return RedirectResponse(url=target_url, status_code=307)
+    elif has_frontend:
         # Serve `/assets/*` explicitly so that misses return a plain-text
         # 404 with the correct Content-Type instead of the default JSON
         # error response. JSON for a JS/CSS request is what masked the

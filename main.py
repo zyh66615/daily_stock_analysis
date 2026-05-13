@@ -45,6 +45,7 @@ if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").low
 
 import argparse
 import logging
+import subprocess
 import sys
 import time
 import uuid
@@ -234,6 +235,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
   python main.py --schedule         # 启用定时任务模式
   python main.py --market-review    # 仅运行大盘复盘
+  python main.py --serve-only --web-dev  # 启用 Web 热更新开发模式
         '''
     )
 
@@ -318,12 +320,14 @@ def parse_arguments() -> argparse.Namespace:
 
     parser.add_argument(
         '--webui',
+        '--web-ui',
         action='store_true',
         help='启动 Web 管理界面'
     )
 
     parser.add_argument(
         '--webui-only',
+        '--web-ui-only',
         action='store_true',
         help='仅启动 Web 服务，不执行自动分析'
     )
@@ -338,6 +342,12 @@ def parse_arguments() -> argparse.Namespace:
         '--serve-only',
         action='store_true',
         help='仅启动 FastAPI 后端服务，不自动执行分析'
+    )
+
+    parser.add_argument(
+        '--web-dev',
+        action='store_true',
+        help='启用 Web 开发模式：非 API 路由重定向到 Vite dev server（支持热更新）'
     )
 
     parser.add_argument(
@@ -677,6 +687,73 @@ def start_api_server(host: str, port: int, config: Config) -> None:
     logger.info(f"FastAPI 服务已启动: http://{host}:{port}")
 
 
+def _run_web_hot_reload_stack(host: str, port: int, config: Config) -> int:
+    """Run backend + frontend dev servers with hot reload in one command."""
+    project_root = Path(__file__).resolve().parent
+    web_dir = project_root / "apps" / "dsa-web"
+    env = os.environ.copy()
+    env["WEB_UI_DEV_MODE"] = "true"
+    env.setdefault("WEB_UI_DEV_SERVER", "http://127.0.0.1:5173")
+
+    backend_cmd = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "api.app:app",
+        "--reload",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--log-level",
+        (config.log_level or "INFO").lower(),
+    ]
+    frontend_cmd = ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
+
+    logger.info("启动 Web 热更新开发模式")
+    logger.info("后端命令: %s", " ".join(backend_cmd))
+    logger.info("前端命令: %s", " ".join(frontend_cmd))
+    logger.info("访问入口: http://127.0.0.1:%s （会自动跳转到 Vite dev server）", port)
+
+    backend_proc: Optional[subprocess.Popen] = None
+    frontend_proc: Optional[subprocess.Popen] = None
+
+    try:
+        backend_proc = subprocess.Popen(backend_cmd, env=env, cwd=str(project_root))
+        frontend_proc = subprocess.Popen(frontend_cmd, env=env, cwd=str(web_dir))
+
+        while True:
+            backend_code = backend_proc.poll()
+            frontend_code = frontend_proc.poll()
+            if backend_code is not None:
+                logger.warning("后端开发服务已退出，exit code=%s", backend_code)
+                return int(backend_code)
+            if frontend_code is not None:
+                logger.warning("前端开发服务已退出，exit code=%s", frontend_code)
+                return int(frontend_code)
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("收到中断信号，正在停止 Web 热更新开发模式...")
+        return 0
+    except FileNotFoundError as exc:
+        logger.error("启动开发服务失败，缺少命令: %s", exc)
+        return 1
+    finally:
+        for proc in (frontend_proc, backend_proc):
+            if proc is None:
+                continue
+            if proc.poll() is None:
+                proc.terminate()
+        for proc in (frontend_proc, backend_proc):
+            if proc is None:
+                continue
+            if proc.poll() is None:
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+
+
 def _is_truthy_env(var_name: str, default: str = "true") -> bool:
     """Parse common truthy / falsy environment values."""
     value = os.getenv(var_name, default).strip().lower()
@@ -893,9 +970,22 @@ def main() -> int:
 
     # === 启动 Web 服务 (如果启用) ===
     start_serve = (args.serve or args.serve_only) and os.getenv("GITHUB_ACTIONS") != "true"
+    web_hot_reload_enabled = (
+        start_serve
+        and (args.webui or args.webui_only)
+        and _is_truthy_env("WEB_UI_HOT_RELOAD", "true")
+    )
 
     # 兼容旧版 WEBUI_HOST/WEBUI_PORT：如果用户未通过 --host/--port 指定，则使用旧变量
     if start_serve:
+        if web_hot_reload_enabled:
+            return _run_web_hot_reload_stack(host=args.host, port=args.port, config=config)
+
+        if getattr(args, "web_dev", False):
+            os.environ["WEB_UI_DEV_MODE"] = "true"
+            os.environ.setdefault("WEB_UI_DEV_SERVER", "http://127.0.0.1:5173")
+            logger.info("Web 开发模式已启用：%s", os.environ["WEB_UI_DEV_SERVER"])
+
         if args.host == '0.0.0.0' and os.getenv('WEBUI_HOST'):
             args.host = os.getenv('WEBUI_HOST')
         if args.port == 8000 and os.getenv('WEBUI_PORT'):
@@ -903,8 +993,9 @@ def main() -> int:
 
     bot_clients_started = False
     if start_serve:
-        if not prepare_webui_frontend_assets():
-            logger.warning("前端静态资源未就绪，继续启动 FastAPI 服务（Web 页面可能不可用）")
+        if not getattr(args, "web_dev", False):
+            if not prepare_webui_frontend_assets():
+                logger.warning("前端静态资源未就绪，继续启动 FastAPI 服务（Web 页面可能不可用）")
         try:
             start_api_server(host=args.host, port=args.port, config=config)
             bot_clients_started = True
