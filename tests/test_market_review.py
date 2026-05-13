@@ -51,6 +51,7 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
 
     def test_run_market_review_uses_english_notification_title(self) -> None:
         notifier = self._make_notifier()
+        db = MagicMock()
         market_analyzer = MagicMock()
         market_analyzer.run_daily_review.return_value = "## 2026-04-10 A-share Market Recap\n\nBody"
 
@@ -58,7 +59,11 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
             market_review_module,
             "get_config",
             return_value=SimpleNamespace(report_language="en", market_review_region="cn"),
-        ), patch.object(market_review_module, "MarketAnalyzer", return_value=market_analyzer):
+        ), patch.object(market_review_module, "MarketAnalyzer", return_value=market_analyzer), patch.object(
+            market_review_module.DatabaseManager,
+            "get_instance",
+            return_value=db,
+        ):
             result = run_market_review(notifier, send_notification=True)
 
         self.assertEqual(result, "## 2026-04-10 A-share Market Recap\n\nBody")
@@ -68,9 +73,12 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertTrue(sent_content.startswith("🎯 Market Review\n\n"))
         self.assertTrue(notifier.send.call_args.kwargs["email_send_to_all"])
         self.assertEqual(notifier.send.call_args.kwargs["route_type"], "report")
+        db.save_analysis_history.assert_called_once()
+        self.assertEqual(db.save_analysis_history.call_args.kwargs["report_type"], "market_review")
 
     def test_run_market_review_merges_both_regions_with_english_wrappers(self) -> None:
         notifier = self._make_notifier()
+        db = MagicMock()
         cn_analyzer = MagicMock()
         cn_analyzer.run_daily_review.return_value = "CN body"
         hk_analyzer = MagicMock()
@@ -86,6 +94,10 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
             market_review_module,
             "MarketAnalyzer",
             side_effect=[cn_analyzer, hk_analyzer, us_analyzer],
+        ), patch.object(
+            market_review_module.DatabaseManager,
+            "get_instance",
+            return_value=db,
         ):
             result = run_market_review(notifier, send_notification=False)
 
@@ -96,11 +108,13 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         saved_content = notifier.save_report_to_file.call_args.args[0]
         self.assertTrue(saved_content.startswith("# 🎯 Market Review\n\n"))
         notifier.send.assert_not_called()
+        db.save_analysis_history.assert_called_once()
 
     def test_run_market_review_comma_joined_subset_cn_us(self) -> None:
         """Regression: compute_effective_region("both", {"cn","us"}) -> "cn,us"
         must produce A-share + US report without HK."""
         notifier = self._make_notifier()
+        db = MagicMock()
         cn_analyzer = MagicMock()
         cn_analyzer.run_daily_review.return_value = "CN body"
         us_analyzer = MagicMock()
@@ -114,6 +128,10 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
             market_review_module,
             "MarketAnalyzer",
             side_effect=[cn_analyzer, us_analyzer],
+        ), patch.object(
+            market_review_module.DatabaseManager,
+            "get_instance",
+            return_value=db,
         ):
             result = run_market_review(
                 notifier, send_notification=False, override_region="cn,us"
@@ -123,11 +141,13 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertIn("# 美股大盘复盘\n\nUS body", result)
         self.assertNotIn("港股", result)
         self.assertNotIn("HK", result)
+        db.save_analysis_history.assert_called_once()
 
     def test_run_market_review_comma_joined_subset_cn_hk(self) -> None:
         """Regression: compute_effective_region("both", {"cn","hk"}) -> "cn,hk"
         must produce A-share + HK report without US."""
         notifier = self._make_notifier()
+        db = MagicMock()
         cn_analyzer = MagicMock()
         cn_analyzer.run_daily_review.return_value = "CN body"
         hk_analyzer = MagicMock()
@@ -141,6 +161,10 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
             market_review_module,
             "MarketAnalyzer",
             side_effect=[cn_analyzer, hk_analyzer],
+        ), patch.object(
+            market_review_module.DatabaseManager,
+            "get_instance",
+            return_value=db,
         ):
             result = run_market_review(
                 notifier, send_notification=False, override_region="cn,hk"
@@ -150,6 +174,7 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertIn("# 港股大盘复盘\n\nHK body", result)
         self.assertNotIn("美股", result)
         self.assertNotIn("US Market", result)
+        db.save_analysis_history.assert_called_once()
 
 
 if __name__ == "__main__":

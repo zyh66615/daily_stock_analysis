@@ -11,6 +11,7 @@
 """
 
 import logging
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -19,7 +20,8 @@ from src.notification import NotificationService
 from src.market_analyzer import MarketAnalyzer
 from src.report_language import normalize_report_language
 from src.search_service import SearchService
-from src.analyzer import GeminiAnalyzer
+from src.analyzer import AnalysisResult, GeminiAnalyzer
+from src.storage import DatabaseManager
 
 
 logger = logging.getLogger(__name__)
@@ -53,6 +55,7 @@ def run_market_review(
     send_notification: bool = True,
     merge_notification: bool = False,
     override_region: Optional[str] = None,
+    query_id: Optional[str] = None,
 ) -> Optional[str]:
     """
     执行大盘复盘分析
@@ -64,6 +67,7 @@ def run_market_review(
         send_notification: 是否发送通知
         merge_notification: 是否合并推送（跳过本次推送，由 main 层合并个股+大盘后统一发送，Issue #190）
         override_region: 覆盖 config 的 market_review_region（Issue #373 交易日过滤后有效子集）
+        query_id: 历史记录 query_id（可选；为空时自动生成）
 
     Returns:
         复盘报告文本
@@ -117,6 +121,40 @@ def run_market_review(
             review_report = market_analyzer.run_daily_review()
         
         if review_report:
+            # 保存复盘结果到历史记录（DB）
+            try:
+                report_language = normalize_report_language(getattr(config, "report_language", "zh"))
+                history_query_id = (query_id or "").strip() or f"market_review_{uuid.uuid4().hex}"
+                region_label = region.replace(",", "_")
+                history_name = "Market Review" if report_language == "en" else "大盘复盘"
+                history_result = AnalysisResult(
+                    code=f"market_review_{region_label}",
+                    name=history_name,
+                    sentiment_score=50,
+                    trend_prediction="Market recap" if report_language == "en" else "大盘复盘",
+                    operation_advice="Review completed" if report_language == "en" else "复盘完成",
+                    decision_type="hold",
+                    confidence_level="medium" if report_language == "en" else "中",
+                    report_language=report_language,
+                    analysis_summary=review_report,
+                    data_sources="market_review",
+                    success=True,
+                )
+                DatabaseManager.get_instance().save_analysis_history(
+                    result=history_result,
+                    query_id=history_query_id,
+                    report_type="market_review",
+                    news_content=None,
+                    context_snapshot={
+                        "region": region,
+                        "send_notification": send_notification,
+                        "merge_notification": merge_notification,
+                    },
+                    save_snapshot=True,
+                )
+            except Exception as exc:
+                logger.warning("保存大盘复盘历史失败: %s", exc)
+
             # 保存报告到文件
             date_str = datetime.now().strftime('%Y%m%d')
             report_filename = f"market_review_{date_str}.md"
