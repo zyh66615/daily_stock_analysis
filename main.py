@@ -973,7 +973,7 @@ def main() -> int:
     web_hot_reload_enabled = (
         start_serve
         and (args.webui or args.webui_only)
-        and _is_truthy_env("WEB_UI_HOT_RELOAD", "true")
+        and _is_truthy_env("WEB_UI_HOT_RELOAD", "false")
     )
 
     # 兼容旧版 WEBUI_HOST/WEBUI_PORT：如果用户未通过 --host/--port 指定，则使用旧变量
