@@ -92,4 +92,22 @@ describe('ReportOverview', () => {
     expect(screen.getByText('领跌')).toBeInTheDocument();
     expect(screen.getByText('-2.50%')).toBeInTheDocument();
   });
+
+  it('uses US market price colors for US tickers', () => {
+    render(
+      <ReportOverview
+        meta={{
+          ...baseMeta,
+          stockCode: 'AAPL.US',
+          stockName: 'Apple',
+          currentPrice: 203.12,
+          changePct: 1.25,
+        }}
+        summary={baseSummary}
+      />,
+    );
+
+    expect(screen.getByText('203.12')).toHaveStyle({ color: 'var(--home-price-down)' });
+    expect(screen.getByText('+1.25%')).toHaveStyle({ color: 'var(--home-price-down)' });
+  });
 });

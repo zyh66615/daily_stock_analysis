@@ -86,3 +86,4 @@ static/
 /apps/dsa-desktop/node_modules/
 uv.lock
 .envrc
+.agents/

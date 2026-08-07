@@ -4,9 +4,12 @@ import type {
   ReportMeta,
   ReportSummary as ReportSummaryType,
 } from '../../types/analysis';
-import { Badge, Card, ScoreGauge } from '../common';
+import { Badge } from '../common/Badge';
+import { Card } from '../common/Card';
+import { ScoreGauge } from '../common/ScoreGauge';
 import { formatDateTime } from '../../utils/format';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
+import { getPriceChangeColor } from '../../utils/marketColor';
 
 interface ReportOverviewProps {
   meta: ReportMeta;
@@ -86,19 +89,8 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
   const boardSignals = buildBoardSignalMap(details);
 
   const getPriceChangeStyle = (changePct: number | undefined): React.CSSProperties | undefined => {
-    if (changePct === undefined || changePct === null) {
-      return undefined;
-    }
-
-    if (changePct > 0) {
-      return { color: 'var(--home-price-up)' };
-    }
-
-    if (changePct < 0) {
-      return { color: 'var(--home-price-down)' };
-    }
-
-    return undefined;
+    const color = getPriceChangeColor(changePct, meta.stockCode);
+    return color ? { color } : undefined;
   };
 
   const formatChangePct = (changePct: number | undefined): string => {

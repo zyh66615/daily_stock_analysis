@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] Web 首页新增“一键分析全部”入口：读取 `STOCK_LIST` 并一次性提交 `stock_codes` 批量分析任务，进度可在任务列表查看。
 - [新功能] 新增 Web 开发热更新模式：`python main.py --serve-only --web-dev` 时，后端将非 API 路由重定向到 `WEB_UI_DEV_SERVER`（默认 `http://127.0.0.1:5173`），支持 Vite HMR。
 - [改进] `uv run python main.py --web-ui` / `--webui` 默认回退为静态托管模式；仅在显式设置 `WEB_UI_HOT_RELOAD=true` 时才自动启动 `uvicorn --reload` 与 `npm run dev`。
+- [改进] Web 报告页涨跌色按市场惯例区分：A 股和港股维持红涨绿跌，美股切换为绿涨红跌；操作信号颜色保持不变，避免信号色与涨跌色混淆。
 
 ## [3.16.0] - 2026-05-10
 
